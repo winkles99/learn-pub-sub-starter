@@ -25,9 +25,7 @@ func main() {
 	}
 	log.Printf("Username set to: %s", username)
 
-	connStr := "amqp://guest:guest@localhost:5672/"
-
-	conn, err := amqp.Dial(connStr)
+	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	if err != nil {
 		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
 	}
@@ -38,7 +36,8 @@ func main() {
 	}()
 
 	// Declare and bind a transient queue using the helper in internal/pubsub.
-	ch, q, err := pubsub.DeclareAndBind(conn, routing.ExchangePerilDirect, "", routing.PauseKey, pubsub.Transient)
+	queueName := fmt.Sprintf("%s.%s", routing.PauseKey, username)
+	ch, q, err := pubsub.DeclareAndBind(conn, routing.ExchangePerilDirect, queueName, routing.PauseKey, pubsub.Transient)
 	if err != nil {
 		conn.Close()
 		log.Fatalf("Failed to declare and bind queue: %v", err)
@@ -54,7 +53,6 @@ func main() {
 		log.Fatalf("Failed to register consumer: %v", err)
 	}
 
-	// Handle messages in a goroutine
 	done := make(chan struct{})
 	go func() {
 		for d := range msgs {
@@ -68,8 +66,6 @@ func main() {
 		close(done)
 	}()
 
-	// Also demonstrate publishing a message from the client (optional)
-	// Example: publish a PlayingState with IsPaused=false
 	ps := routing.PlayingState{IsPaused: false}
 	if err := pubsub.PublishJSON(ch, routing.ExchangePerilDirect, routing.PauseKey, ps); err != nil {
 		log.Printf("Failed to publish PlayingState from client: %v", err)
@@ -77,7 +73,6 @@ func main() {
 		log.Println("Client published PlayingState (IsPaused=false)")
 	}
 
-	// Wait for interrupt or termination signal
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 
@@ -88,7 +83,6 @@ func main() {
 		fmt.Println("Message channel closed, exiting")
 	}
 
-	// attempt a graceful close
 	_ = ch.Close()
 	_ = conn.Close()
 }

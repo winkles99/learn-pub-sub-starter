@@ -8,6 +8,16 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+// SimpleQueueType controls whether a queue is durable or transient.
+type SimpleQueueType int
+
+const (
+	// Durable queues survive broker restarts and are not auto-deleted.
+	Durable SimpleQueueType = iota
+	// Transient queues are non-durable, exclusive, and auto-deleted.
+	Transient
+)
+
 // PublishJSON marshals val to JSON and publishes it to the given exchange/routing key.
 // It sets ContentType to application/json.
 func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
@@ -29,16 +39,6 @@ func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
 	)
 }
 
-// SimpleQueueType controls whether a queue is durable or transient.
-type SimpleQueueType int
-
-const (
-	// Durable queues survive broker restarts and are not auto-deleted.
-	Durable SimpleQueueType = iota
-	// Transient queues are non-durable, exclusive, and auto-deleted.
-	Transient
-)
-
 // DeclareAndBind opens a channel on the provided connection, ensures the
 // exchange exists, declares a queue (durable or transient) and binds it to
 // the provided routing key. It returns the created channel and queue so
@@ -53,7 +53,7 @@ func DeclareAndBind(
 ) (*amqp.Channel, amqp.Queue, error) {
 	ch, err := conn.Channel()
 	if err != nil {
-		return nil, amqp.Queue{}, fmt.Errorf("open channel: %w", err)
+		return nil, amqp.Queue{}, fmt.Errorf("failed to open channel: %w", err)
 	}
 
 	// Declare exchange (idempotent)
