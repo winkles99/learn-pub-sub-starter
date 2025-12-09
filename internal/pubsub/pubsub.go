@@ -60,7 +60,7 @@ func DeclareAndBind(
 	if err := ch.ExchangeDeclare(
 		exchange,
 		"direct",
-		false,
+		true,
 		false,
 		false,
 		false,
