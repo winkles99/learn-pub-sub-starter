@@ -18,6 +18,18 @@ const (
 	Transient
 )
 
+// AckType represents how to acknowledge a message.
+type AckType int
+
+const (
+	// Ack acknowledges the message successfully.
+	Ack AckType = iota
+	// NackRequeue rejects the message and requeues it.
+	NackRequeue
+	// NackDiscard rejects the message without requeuing.
+	NackDiscard
+)
+
 // PublishJSON marshals val to JSON and publishes it to the given exchange/routing key.
 // It sets ContentType to application/json.
 func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
@@ -123,7 +135,7 @@ func SubscribeJSON[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(T),
+	handler func(T) AckType,
 ) error {
 	ch, q, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
@@ -140,7 +152,7 @@ func SubscribeJSONWithExchangeType[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(T),
+	handler func(T) AckType,
 ) error {
 	ch, q, err := DeclareAndBindWithExchangeType(conn, exchange, exchangeType, queueName, key, queueType)
 	if err != nil {
@@ -149,7 +161,7 @@ func SubscribeJSONWithExchangeType[T any](
 	return subscribeJSONWithChannel(ch, q, handler)
 }
 
-func subscribeJSONWithChannel[T any](ch *amqp.Channel, q amqp.Queue, handler func(T)) error {
+func subscribeJSONWithChannel[T any](ch *amqp.Channel, q amqp.Queue, handler func(T) AckType) error {
 	defer ch.Close()
 
 	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
@@ -165,8 +177,18 @@ func subscribeJSONWithChannel[T any](ch *amqp.Channel, q amqp.Queue, handler fun
 				d.Ack(false)
 				continue
 			}
-			handler(val)
-			d.Ack(false)
+			ackType := handler(val)
+			switch ackType {
+			case Ack:
+				fmt.Println("Acknowledging message")
+				d.Ack(false)
+			case NackRequeue:
+				fmt.Println("Negative acknowledging message (requeue)")
+				d.Nack(false, true)
+			case NackDiscard:
+				fmt.Println("Negative acknowledging message (discard)")
+				d.Nack(false, false)
+			}
 		}
 	}()
 

@@ -160,18 +160,29 @@ func main() {
 
 // handlerPause returns a handler function that processes PlayingState messages.
 // It logs the pause state received from the server.
-func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
-	return func(ps routing.PlayingState) {
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) pubsub.AckType {
+	return func(ps routing.PlayingState) pubsub.AckType {
 		defer fmt.Print("> ")
 		gs.HandlePause(ps)
+		return pubsub.Ack
 	}
 }
 
 // handlerMove returns a handler that processes ArmyMove messages from other players.
 // It updates local state and re-prompts the user.
-func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) {
-	return func(mv gamelogic.ArmyMove) {
+func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) pubsub.AckType {
+	return func(mv gamelogic.ArmyMove) pubsub.AckType {
 		defer fmt.Print("> ")
-		gs.HandleMove(mv)
+		outcome := gs.HandleMove(mv)
+		switch outcome {
+		case gamelogic.MoveOutComeSafe:
+			return pubsub.Ack
+		case gamelogic.MoveOutcomeMakeWar:
+			return pubsub.Ack
+		case gamelogic.MoveOutcomeSamePlayer:
+			return pubsub.NackDiscard
+		default:
+			return pubsub.NackDiscard
+		}
 	}
 }
