@@ -8,6 +8,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/bootdotdev/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/pubsub"
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/routing"
 )
@@ -30,6 +31,8 @@ func main() {
 
 	fmt.Println("Successfully connected to RabbitMQ")
 
+	gamelogic.PrintServerHelp()
+
 	// Create a channel for publishing/consuming
 	ch, err := conn.Channel()
 	if err != nil {
@@ -48,23 +51,41 @@ func main() {
 		}
 	}()
 
-	// Publish a PlayingState message (IsPaused = true) to the exchange/key.
-	ps := routing.PlayingState{IsPaused: true}
-	if err := pubsub.PublishJSON(ch, routing.ExchangePerilDirect, routing.PauseKey, ps); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to publish PlayingState: %v\n", err)
-	} else {
-		fmt.Println("Published PlayingState (IsPaused=true)")
-	}
-
 	// Wait for interrupt (Ctrl+C) or termination signal.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 
-	<-sigs
-	fmt.Println("Signal received, shutting down...")
+	// Infinite loop to handle server commands.
+	for {
+		// Get user input.
+		input := gamelogic.GetInput()
+		if len(input) == 0 {
+			continue
+		}
 
-	// Close the connection explicitly on shutdown (deferred close will also run).
-	if err := conn.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error closing connection during shutdown: %v\n", err)
+		cmd := input[0]
+		switch cmd {
+		case "help":
+			gamelogic.PrintServerHelp()
+		case "pause":
+			ps := routing.PlayingState{IsPaused: true}
+			if err := pubsub.PublishJSON(ch, routing.ExchangePerilDirect, routing.PauseKey, ps); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to publish pause: %v\n", err)
+			} else {
+				fmt.Println("Published pause")
+			}
+		case "resume":
+			ps := routing.PlayingState{IsPaused: false}
+			if err := pubsub.PublishJSON(ch, routing.ExchangePerilDirect, routing.PauseKey, ps); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to publish resume: %v\n", err)
+			} else {
+				fmt.Println("Published resume")
+			}
+		case "quit":
+			fmt.Println("Shutting down...")
+			return
+		default:
+			fmt.Printf("Unknown command: %s\n", cmd)
+		}
 	}
 }
