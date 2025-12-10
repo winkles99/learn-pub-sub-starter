@@ -48,6 +48,9 @@ func main() {
 		}
 	}()
 
+	// Create a new game state for the player
+	gameState := gamelogic.NewGameState(username)
+
 	msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)
 	if err != nil {
 		log.Fatalf("Failed to register consumer: %v", err)
@@ -75,6 +78,60 @@ func main() {
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		for {
+			select {
+			case <-sigs:
+				fmt.Println("Signal received, shutting down...")
+				return
+			default:
+				words := gamelogic.GetInput()
+
+				if len(words) == 0 {
+					continue
+				}
+
+				switch words[0] {
+				case "spawn":
+					if len(words) < 3 {
+						fmt.Println("spawn requires 2 arguments: location and unit type")
+						fmt.Println("Example: spawn europe infantry")
+						continue
+					}
+					err := gameState.CommandSpawn(words)
+					if err != nil {
+						log.Printf("Spawn failed: %v", err)
+						continue
+					}
+					fmt.Println("Unit spawned successfully")
+				case "move":
+					if len(words) < 3 {
+						fmt.Println("move requires 2 arguments: destination and unit ID")
+						fmt.Println("Example: move europe 1")
+						continue
+					}
+					_, err := gameState.CommandMove(words)
+					if err != nil {
+						log.Printf("Move failed: %v", err)
+						continue
+					}
+					fmt.Println("Unit moved successfully")
+				case "status":
+					gameState.CommandStatus()
+				case "spam":
+					fmt.Println("Spamming not allowed yet!")
+				case "help":
+					gamelogic.PrintClientHelp()
+				case "quit":
+					gamelogic.PrintQuit()
+					return
+				default:
+					fmt.Printf("Unknown command: %s\n", words[0])
+				}
+			}
+		}
+	}()
 
 	select {
 	case <-sigs:
