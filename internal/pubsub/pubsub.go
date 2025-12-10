@@ -104,13 +104,18 @@ func DeclareAndBindWithExchangeType(
 		exclusive = false
 	}
 
+	// Configure dead letter exchange
+	args := amqp.Table{
+		"x-dead-letter-exchange": "peril_dlx",
+	}
+
 	q, err := ch.QueueDeclare(
 		queueName,
 		durable,
 		autoDelete,
 		exclusive,
 		false,
-		nil,
+		args,
 	)
 	if err != nil {
 		ch.Close()
@@ -162,14 +167,13 @@ func SubscribeJSONWithExchangeType[T any](
 }
 
 func subscribeJSONWithChannel[T any](ch *amqp.Channel, q amqp.Queue, handler func(T) AckType) error {
-	defer ch.Close()
-
 	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
 	if err != nil {
 		return fmt.Errorf("consume messages: %w", err)
 	}
 
 	go func() {
+		defer ch.Close()
 		for d := range msgs {
 			var val T
 			if err := json.Unmarshal(d.Body, &val); err != nil {
