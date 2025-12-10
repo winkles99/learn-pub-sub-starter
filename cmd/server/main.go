@@ -51,6 +51,21 @@ func main() {
 		}
 	}()
 
+	// Declare and bind the durable game_logs queue to the peril_topic exchange
+	_, _, err = pubsub.DeclareAndBindWithExchangeType(
+		conn,
+		routing.ExchangePerilTopic,
+		"topic",
+		"game_logs",
+		"game_logs.*",
+		pubsub.Durable,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to declare and bind game_logs queue: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Declared and bound game_logs queue to peril_topic exchange")
+
 	// Wait for interrupt (Ctrl+C) or termination signal.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
@@ -87,5 +102,10 @@ func main() {
 		default:
 			fmt.Printf("Unknown command: %s\n", cmd)
 		}
+	}
+
+	// Close the connection explicitly on shutdown (deferred close will also run).
+	if err := conn.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error closing connection during shutdown: %v\n", err)
 	}
 }

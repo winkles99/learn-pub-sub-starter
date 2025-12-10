@@ -51,6 +51,18 @@ func DeclareAndBind(
 	key string,
 	queueType SimpleQueueType,
 ) (*amqp.Channel, amqp.Queue, error) {
+	return DeclareAndBindWithExchangeType(conn, exchange, "direct", queueName, key, queueType)
+}
+
+// DeclareAndBindWithExchangeType is like DeclareAndBind but allows specifying the exchange type.
+func DeclareAndBindWithExchangeType(
+	conn *amqp.Connection,
+	exchange,
+	exchangeType,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+) (*amqp.Channel, amqp.Queue, error) {
 	ch, err := conn.Channel()
 	if err != nil {
 		return nil, amqp.Queue{}, fmt.Errorf("failed to open channel: %w", err)
@@ -59,7 +71,7 @@ func DeclareAndBind(
 	// Declare exchange (idempotent)
 	if err := ch.ExchangeDeclare(
 		exchange,
-		"direct",
+		exchangeType,
 		true,
 		false,
 		false,
