@@ -66,6 +66,21 @@ func main() {
 	}
 	fmt.Println("Declared and bound game_logs queue to peril_topic exchange")
 
+	// Ensure a durable moves queue is bound for all move events
+	_, _, err = pubsub.DeclareAndBindWithExchangeType(
+		conn,
+		routing.ExchangePerilTopic,
+		"topic",
+		routing.ArmyMovesPrefix,
+		fmt.Sprintf("%s.*", routing.ArmyMovesPrefix),
+		pubsub.Durable,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to declare and bind army moves queue: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Declared and bound army moves queue to peril_topic exchange")
+
 	// Wait for interrupt (Ctrl+C) or termination signal.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)

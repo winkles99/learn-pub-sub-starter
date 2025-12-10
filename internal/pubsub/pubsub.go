@@ -112,3 +112,63 @@ func DeclareAndBindWithExchangeType(
 
 	return ch, q, nil
 }
+
+// SubscribeJSON declares a queue, binds it to an exchange, and continuously consumes
+// JSON messages from the queue. For each message, it unmarshals the JSON body into
+// a value of type T and calls the handler function with that value.
+// The function blocks indefinitely, listening for messages until the connection is closed.
+func SubscribeJSON[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T),
+) error {
+	ch, q, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
+	if err != nil {
+		return err
+	}
+	return subscribeJSONWithChannel(ch, q, handler)
+}
+
+// SubscribeJSONWithExchangeType allows specifying exchange type (e.g., topic).
+func SubscribeJSONWithExchangeType[T any](
+	conn *amqp.Connection,
+	exchange,
+	exchangeType,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T),
+) error {
+	ch, q, err := DeclareAndBindWithExchangeType(conn, exchange, exchangeType, queueName, key, queueType)
+	if err != nil {
+		return err
+	}
+	return subscribeJSONWithChannel(ch, q, handler)
+}
+
+func subscribeJSONWithChannel[T any](ch *amqp.Channel, q amqp.Queue, handler func(T)) error {
+	defer ch.Close()
+
+	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("consume messages: %w", err)
+	}
+
+	go func() {
+		for d := range msgs {
+			var val T
+			if err := json.Unmarshal(d.Body, &val); err != nil {
+				fmt.Printf("Error unmarshaling message: %v\n", err)
+				d.Ack(false)
+				continue
+			}
+			handler(val)
+			d.Ack(false)
+		}
+	}()
+
+	return nil
+}

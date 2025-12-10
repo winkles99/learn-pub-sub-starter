@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -37,37 +36,48 @@ func main() {
 
 	// Declare and bind a transient queue using the helper in internal/pubsub.
 	queueName := fmt.Sprintf("%s.%s", routing.PauseKey, username)
-	ch, q, err := pubsub.DeclareAndBind(conn, routing.ExchangePerilDirect, queueName, routing.PauseKey, pubsub.Transient)
+	_, _, err = pubsub.DeclareAndBind(conn, routing.ExchangePerilDirect, queueName, routing.PauseKey, pubsub.Transient)
 	if err != nil {
 		conn.Close()
 		log.Fatalf("Failed to declare and bind queue: %v", err)
 	}
-	defer func() {
-		if err := ch.Close(); err != nil {
-			log.Printf("Error closing channel: %v", err)
-		}
-	}()
 
 	// Create a new game state for the player
 	gameState := gamelogic.NewGameState(username)
 
-	msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)
+	// Subscribe to pause messages using the new handler
+	err = pubsub.SubscribeJSON(
+		conn,
+		routing.ExchangePerilDirect,
+		fmt.Sprintf("pause.%s", username),
+		routing.PauseKey,
+		pubsub.Transient,
+		handlerPause(gameState),
+	)
 	if err != nil {
-		log.Fatalf("Failed to register consumer: %v", err)
+		log.Fatalf("Failed to subscribe to pause messages: %v", err)
 	}
 
-	done := make(chan struct{})
-	go func() {
-		for d := range msgs {
-			var ps routing.PlayingState
-			if err := json.Unmarshal(d.Body, &ps); err != nil {
-				log.Printf("Failed to unmarshal PlayingState: %v", err)
-				continue
-			}
-			log.Printf("Received PlayingState: IsPaused=%v", ps.IsPaused)
-		}
-		close(done)
-	}()
+	// Subscribe to move messages from all other players via the topic exchange
+	err = pubsub.SubscribeJSONWithExchangeType(
+		conn,
+		routing.ExchangePerilTopic,
+		"topic",
+		fmt.Sprintf("%s.%s", routing.ArmyMovesPrefix, username),
+		fmt.Sprintf("%s.*", routing.ArmyMovesPrefix),
+		pubsub.Transient,
+		handlerMove(gameState),
+	)
+	if err != nil {
+		log.Fatalf("Failed to subscribe to move messages: %v", err)
+	}
+
+	// Create a channel for publishing
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to create channel: %v", err)
+	}
+	defer ch.Close()
 
 	ps := routing.PlayingState{IsPaused: false}
 	if err := pubsub.PublishJSON(ch, routing.ExchangePerilDirect, routing.PauseKey, ps); err != nil {
@@ -111,11 +121,17 @@ func main() {
 						fmt.Println("Example: move europe 1")
 						continue
 					}
-					_, err := gameState.CommandMove(words)
+					mv, err := gameState.CommandMove(words)
 					if err != nil {
 						log.Printf("Move failed: %v", err)
 						continue
 					}
+					// Publish the move to other players via topic exchange
+					if err := pubsub.PublishJSON(ch, routing.ExchangePerilTopic, fmt.Sprintf("%s.%s", routing.ArmyMovesPrefix, gameState.GetUsername()), mv); err != nil {
+						log.Printf("Failed to publish move: %v", err)
+						continue
+					}
+					log.Println("Move published successfully")
 					fmt.Println("Unit moved successfully")
 				case "status":
 					gameState.CommandStatus()
@@ -136,10 +152,26 @@ func main() {
 	select {
 	case <-sigs:
 		fmt.Println("Signal received, shutting down...")
-	case <-done:
-		fmt.Println("Message channel closed, exiting")
 	}
 
 	_ = ch.Close()
 	_ = conn.Close()
+}
+
+// handlerPause returns a handler function that processes PlayingState messages.
+// It logs the pause state received from the server.
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
+	return func(ps routing.PlayingState) {
+		defer fmt.Print("> ")
+		gs.HandlePause(ps)
+	}
+}
+
+// handlerMove returns a handler that processes ArmyMove messages from other players.
+// It updates local state and re-prompts the user.
+func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) {
+	return func(mv gamelogic.ArmyMove) {
+		defer fmt.Print("> ")
+		gs.HandleMove(mv)
+	}
 }
