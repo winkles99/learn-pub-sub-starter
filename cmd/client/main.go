@@ -58,6 +58,13 @@ func main() {
 		log.Fatalf("Failed to subscribe to pause messages: %v", err)
 	}
 
+	// Create a channel for publishing
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to create channel: %v", err)
+	}
+	defer ch.Close()
+
 	// Subscribe to move messages from all other players via the topic exchange
 	err = pubsub.SubscribeJSONWithExchangeType(
 		conn,
@@ -66,18 +73,11 @@ func main() {
 		fmt.Sprintf("%s.%s", routing.ArmyMovesPrefix, username),
 		fmt.Sprintf("%s.*", routing.ArmyMovesPrefix),
 		pubsub.Transient,
-		handlerMove(gameState),
+		handlerMove(ch, gameState),
 	)
 	if err != nil {
 		log.Fatalf("Failed to subscribe to move messages: %v", err)
 	}
-
-	// Create a channel for publishing
-	ch, err := conn.Channel()
-	if err != nil {
-		log.Fatalf("Failed to create channel: %v", err)
-	}
-	defer ch.Close()
 
 	ps := routing.PlayingState{IsPaused: false}
 	if err := pubsub.PublishJSON(ch, routing.ExchangePerilDirect, routing.PauseKey, ps); err != nil {
@@ -170,7 +170,7 @@ func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) pubsub.Ack
 
 // handlerMove returns a handler that processes ArmyMove messages from other players.
 // It updates local state and re-prompts the user.
-func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) pubsub.AckType {
+func handlerMove(ch *amqp.Channel, gs *gamelogic.GameState) func(gamelogic.ArmyMove) pubsub.AckType {
 	return func(mv gamelogic.ArmyMove) pubsub.AckType {
 		defer fmt.Print("> ")
 		outcome := gs.HandleMove(mv)
@@ -178,7 +178,16 @@ func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) pubsub.AckTyp
 		case gamelogic.MoveOutComeSafe:
 			return pubsub.Ack
 		case gamelogic.MoveOutcomeMakeWar:
-			return pubsub.Ack
+			// Publish war recognition message
+			war := gamelogic.RecognitionOfWar{
+				Attacker: mv.Player,
+				Defender: gs.Player,
+			}
+			routingKey := fmt.Sprintf("%s.%s", routing.WarRecognitionsPrefix, gs.Player.Username)
+			if err := pubsub.PublishJSON(ch, routing.ExchangePerilTopic, routingKey, war); err != nil {
+				log.Printf("Failed to publish war recognition: %v", err)
+			}
+			return pubsub.NackRequeue
 		case gamelogic.MoveOutcomeSamePlayer:
 			return pubsub.NackDiscard
 		default:
