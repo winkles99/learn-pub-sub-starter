@@ -1,7 +1,9 @@
 package pubsub
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 
@@ -47,6 +49,28 @@ func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
 		amqp.Publishing{
 			ContentType: "application/json",
 			Body:        b,
+		},
+	)
+}
+
+// PublishGob encodes val to gob and publishes it to the given exchange/routing key.
+// It sets ContentType to application/gob.
+func PublishGob[T any](ch *amqp.Channel, exchange, key string, val T) error {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(val); err != nil {
+		return fmt.Errorf("gob encode: %w", err)
+	}
+
+	return ch.PublishWithContext(
+		context.Background(),
+		exchange,
+		key,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType: "application/gob",
+			Body:        buf.Bytes(),
 		},
 	)
 }
@@ -142,11 +166,12 @@ func SubscribeJSON[T any](
 	queueType SimpleQueueType,
 	handler func(T) AckType,
 ) error {
-	ch, q, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
-	if err != nil {
-		return err
+	unmarshaller := func(data []byte) (T, error) {
+		var val T
+		err := json.Unmarshal(data, &val)
+		return val, err
 	}
-	return subscribeJSONWithChannel(ch, q, handler)
+	return subscribe(conn, exchange, queueName, key, queueType, handler, unmarshaller)
 }
 
 // SubscribeJSONWithExchangeType allows specifying exchange type (e.g., topic).
@@ -159,14 +184,98 @@ func SubscribeJSONWithExchangeType[T any](
 	queueType SimpleQueueType,
 	handler func(T) AckType,
 ) error {
-	ch, q, err := DeclareAndBindWithExchangeType(conn, exchange, exchangeType, queueName, key, queueType)
+	unmarshaller := func(data []byte) (T, error) {
+		var val T
+		err := json.Unmarshal(data, &val)
+		return val, err
+	}
+	return subscribeWithExchangeType(conn, exchange, exchangeType, queueName, key, queueType, handler, unmarshaller)
+}
+
+// SubscribeGob declares a queue, binds it to an exchange, and continuously consumes
+// gob-encoded messages from the queue. For each message, it decodes the gob body into
+// a value of type T and calls the handler function with that value.
+// The function blocks indefinitely, listening for messages until the connection is closed.
+func SubscribeGob[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckType,
+) error {
+	unmarshaller := func(data []byte) (T, error) {
+		var val T
+		buf := bytes.NewReader(data)
+		dec := gob.NewDecoder(buf)
+		err := dec.Decode(&val)
+		return val, err
+	}
+	return subscribe(conn, exchange, queueName, key, queueType, handler, unmarshaller)
+}
+
+// SubscribeGobWithExchangeType allows specifying exchange type (e.g., topic).
+func SubscribeGobWithExchangeType[T any](
+	conn *amqp.Connection,
+	exchange,
+	exchangeType,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckType,
+) error {
+	unmarshaller := func(data []byte) (T, error) {
+		var val T
+		buf := bytes.NewReader(data)
+		dec := gob.NewDecoder(buf)
+		err := dec.Decode(&val)
+		return val, err
+	}
+	return subscribeWithExchangeType(conn, exchange, exchangeType, queueName, key, queueType, handler, unmarshaller)
+}
+
+// subscribe is a generic helper function that handles the common subscription logic.
+func subscribe[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	simpleQueueType SimpleQueueType,
+	handler func(T) AckType,
+	unmarshaller func([]byte) (T, error),
+) error {
+	ch, q, err := DeclareAndBind(conn, exchange, queueName, key, simpleQueueType)
 	if err != nil {
 		return err
 	}
-	return subscribeJSONWithChannel(ch, q, handler)
+	return subscribeWithChannel(ch, q, handler, unmarshaller)
 }
 
-func subscribeJSONWithChannel[T any](ch *amqp.Channel, q amqp.Queue, handler func(T) AckType) error {
+// subscribeWithExchangeType is a generic helper function that handles subscription with custom exchange type.
+func subscribeWithExchangeType[T any](
+	conn *amqp.Connection,
+	exchange,
+	exchangeType,
+	queueName,
+	key string,
+	simpleQueueType SimpleQueueType,
+	handler func(T) AckType,
+	unmarshaller func([]byte) (T, error),
+) error {
+	ch, q, err := DeclareAndBindWithExchangeType(conn, exchange, exchangeType, queueName, key, simpleQueueType)
+	if err != nil {
+		return err
+	}
+	return subscribeWithChannel(ch, q, handler, unmarshaller)
+}
+
+// subscribeWithChannel handles message consumption and acknowledgment.
+func subscribeWithChannel[T any](
+	ch *amqp.Channel,
+	q amqp.Queue,
+	handler func(T) AckType,
+	unmarshaller func([]byte) (T, error),
+) error {
 	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
 	if err != nil {
 		return fmt.Errorf("consume messages: %w", err)
@@ -175,8 +284,8 @@ func subscribeJSONWithChannel[T any](ch *amqp.Channel, q amqp.Queue, handler fun
 	go func() {
 		defer ch.Close()
 		for d := range msgs {
-			var val T
-			if err := json.Unmarshal(d.Body, &val); err != nil {
+			val, err := unmarshaller(d.Body)
+			if err != nil {
 				fmt.Printf("Error unmarshaling message: %v\n", err)
 				d.Ack(false)
 				continue

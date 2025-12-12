@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -88,7 +89,7 @@ func main() {
 		"war",
 		fmt.Sprintf("%s.*", routing.WarRecognitionsPrefix),
 		pubsub.Durable,
-		handlerWar(gameState),
+		handlerWar(ch, gameState),
 	)
 	if err != nil {
 		log.Fatalf("Failed to subscribe to war messages: %v", err)
@@ -212,26 +213,46 @@ func handlerMove(ch *amqp.Channel, gs *gamelogic.GameState) func(gamelogic.ArmyM
 	}
 }
 
+// publishGameLog publishes a game log message to the topic exchange using gob encoding.
+// It uses the GameLogSlug.username routing key format where username is the player who initiated the action.
+func publishGameLog(ch *amqp.Channel, username, message string) error {
+	gameLog := routing.GameLog{
+		CurrentTime: time.Now(),
+		Message:     message,
+		Username:    username,
+	}
+	routingKey := fmt.Sprintf("%s.%s", routing.GameLogSlug, username)
+	return pubsub.PublishGob(ch, routing.ExchangePerilTopic, routingKey, gameLog)
+}
+
 // handlerWar returns a handler that processes RecognitionOfWar messages.
 // It handles war declarations between players.
-func handlerWar(gs *gamelogic.GameState) func(gamelogic.RecognitionOfWar) pubsub.AckType {
+func handlerWar(ch *amqp.Channel, gs *gamelogic.GameState) func(gamelogic.RecognitionOfWar) pubsub.AckType {
 	return func(rw gamelogic.RecognitionOfWar) pubsub.AckType {
 		defer fmt.Print("> ")
-		outcome, _, _ := gs.HandleWar(rw)
+		outcome, winner, loser := gs.HandleWar(rw)
+
+		var message string
 		switch outcome {
 		case gamelogic.WarOutcomeNotInvolved:
 			return pubsub.NackRequeue
 		case gamelogic.WarOutcomeNoUnits:
 			return pubsub.NackDiscard
 		case gamelogic.WarOutcomeOpponentWon:
-			return pubsub.Ack
+			message = fmt.Sprintf("%s won a war against %s", winner, loser)
 		case gamelogic.WarOutcomeYouWon:
-			return pubsub.Ack
+			message = fmt.Sprintf("%s won a war against %s", winner, loser)
 		case gamelogic.WarOutcomeDraw:
-			return pubsub.Ack
+			message = fmt.Sprintf("A war between %s and %s resulted in a draw", winner, loser)
 		default:
 			fmt.Println("Error: unknown war outcome")
 			return pubsub.NackDiscard
 		}
+
+		if err := publishGameLog(ch, gs.GetUsername(), message); err != nil {
+			log.Printf("Failed to publish game log: %v", err)
+			return pubsub.NackRequeue
+		}
+		return pubsub.Ack
 	}
 }

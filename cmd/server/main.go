@@ -51,20 +51,21 @@ func main() {
 		}
 	}()
 
-	// Declare and bind the durable game_logs queue to the peril_topic exchange
-	_, _, err = pubsub.DeclareAndBindWithExchangeType(
+	// Subscribe to game logs using Gob encoding
+	err = pubsub.SubscribeGobWithExchangeType(
 		conn,
 		routing.ExchangePerilTopic,
 		"topic",
 		"game_logs",
 		"game_logs.*",
 		pubsub.Durable,
+		handlerLogs(),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to declare and bind game_logs queue: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to subscribe to game logs: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("Declared and bound game_logs queue to peril_topic exchange")
+	fmt.Println("Subscribed to game_logs queue")
 
 	// Ensure a durable moves queue is bound for all move events
 	_, _, err = pubsub.DeclareAndBindWithExchangeType(
@@ -122,5 +123,19 @@ func main() {
 	// Close the connection explicitly on shutdown (deferred close will also run).
 	if err := conn.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error closing connection during shutdown: %v\n", err)
+	}
+}
+
+// handlerLogs returns a handler function that processes GameLog messages.
+// It writes each log to disk and defers printing a new prompt.
+func handlerLogs() func(routing.GameLog) pubsub.AckType {
+	return func(gl routing.GameLog) pubsub.AckType {
+		defer fmt.Print("> ")
+		err := gamelogic.WriteLog(gl)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to write log: %v\n", err)
+			return pubsub.NackRequeue
+		}
+		return pubsub.Ack
 	}
 }
